@@ -108,7 +108,7 @@ def main():
         report_to="wandb",
         fp16=True,
     )
-
+    tokenizer.padding_side = 'right'
     trainer = SFTTrainer(
         model=model,
         args=sft_config,
