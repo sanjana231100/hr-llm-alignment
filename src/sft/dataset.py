@@ -1,67 +1,83 @@
 """
-HR dataset filtering and formatting for SFT phase.
-Filters Anthropic HH-RLHF to workforce/HR-relevant conversations.
+HR dataset for SFT phase.
+Combines three public HR datasets for a clean, domain-specific training set.
+  1. syncora/hr-policies-qa-dataset — HR policy Q&A (644 examples)
+  2. strova-ai/hr-policies-qa-dataset — HR compliance Q&A (duplicate source, different curation)
+  3. Pradeep016/career-guidance-qa-dataset — career and workforce guidance Q&A
 """
 
-from datasets import load_dataset
-
-HR_KEYWORDS = [
-    "hiring", "recruitment", "interview", "candidate", "resume",
-    "salary", "compensation", "benefits", "payroll", "bonus",
-    "performance review", "termination", "onboarding", "offboarding",
-    "manager", "employee", "workplace", "hr policy", "human resources",
-    "vendor", "contractor", "workforce", "staffing", "job offer",
-    "promotion", "demotion", "harassment", "discrimination", "leave",
-    "remote work", "work from home", "overtime", "labor law",
-]
+from datasets import load_dataset, concatenate_datasets
 
 
-def is_hr_relevant(example: dict) -> bool:
-    """
-    Returns True if the chosen conversation contains
-    at least one HR-relevant keyword.
-    """
-    text = example["chosen"].lower()
-    return any(keyword in text for keyword in HR_KEYWORDS)
+def format_syncora(example: dict) -> dict:
+    user_msg = example.get("user", "")
+    assistant_msg = example.get("assistant", "")
+    text = f"\n\nHuman: {user_msg}\n\nAssistant: {assistant_msg}"
+    return {"text": text}
 
 
-def format_for_sft(example: dict) -> dict:
-    """
-    HH-RLHF chosen field format:
-      '\n\nHuman: <question>\n\nAssistant: <response>'
-    We use it directly — Mistral learns this conversation structure.
-    """
-    return {"text": example["chosen"]}
+def format_career_guidance(example: dict) -> dict:
+    question = example.get("question", "")
+    answer = example.get("answer", "")
+    text = f"\n\nHuman: {question}\n\nAssistant: {answer}"
+    return {"text": text}
+
+
+def load_syncora_dataset():
+    print("Loading syncora HR policies dataset...")
+    dataset = load_dataset("syncora/hr-policies-qa-dataset", split="train")
+    print(f"Syncora size: {len(dataset)}")
+    dataset = dataset.map(format_syncora, remove_columns=dataset.column_names)
+    return dataset
+
+
+def load_strova_dataset():
+    print("Loading strova HR policies dataset...")
+    dataset = load_dataset("strova-ai/hr-policies-qa-dataset", split="train")
+    print(f"Strova size: {len(dataset)}")
+    dataset = dataset.map(format_syncora, remove_columns=dataset.column_names)
+    return dataset
+
+
+def load_career_dataset():
+    print("Loading career guidance dataset...")
+    dataset = load_dataset("Pradeep016/career-guidance-qa-dataset", split="train")
+    print(f"Career guidance size: {len(dataset)}")
+    dataset = dataset.map(format_career_guidance, remove_columns=dataset.column_names)
+    return dataset
 
 
 def load_hr_sft_dataset(cfg: dict):
     """
-    Load HH-RLHF, filter to HR conversations, format for SFT.
-    Returns a HuggingFace Dataset with a single 'text' column.
+    Combine all three HR datasets into final SFT training set.
     """
-    print("Loading HH-RLHF dataset...")
-    dataset = load_dataset(
-        cfg["training"]["dataset"],
-        split="train"
-    )
-    print(f"Full dataset size: {len(dataset)}")
+    datasets = []
 
-    print("Filtering to HR-relevant conversations...")
-    hr_dataset = dataset.filter(is_hr_relevant)
-    print(f"HR subset size: {len(hr_dataset)}")
+    try:
+        datasets.append(load_syncora_dataset())
+    except Exception as e:
+        print(f"Syncora dataset failed: {e}")
 
-    if cfg["training"]["max_samples"]:
-        hr_dataset = hr_dataset.select(
-            range(min(cfg["training"]["max_samples"], len(hr_dataset)))
-        )
-        print(f"Using {len(hr_dataset)} samples for training")
+    try:
+        datasets.append(load_strova_dataset())
+    except Exception as e:
+        print(f"Strova dataset failed: {e}")
 
-    hr_dataset = hr_dataset.map(
-        format_for_sft,
-        remove_columns=hr_dataset.column_names
-    )
+    try:
+        datasets.append(load_career_dataset())
+    except Exception as e:
+        print(f"Career guidance dataset failed: {e}")
 
-    return hr_dataset
+    combined = concatenate_datasets(datasets)
+    combined = combined.shuffle(seed=42)
+
+    print(f"\nCombined dataset size: {len(combined)}")
+
+    if cfg["training"]["max_samples"] and len(combined) > cfg["training"]["max_samples"]:
+        combined = combined.select(range(cfg["training"]["max_samples"]))
+        print(f"Capped to {len(combined)} samples")
+
+    return combined
 
 
 if __name__ == "__main__":
